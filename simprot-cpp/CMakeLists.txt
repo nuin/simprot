@@ -69,8 +69,13 @@ if(BUILD_TESTS)
     FetchContent_MakeAvailable(Catch2)
 
     add_executable(simprot_tests
-        tests/test_main.cpp
         tests/test_random.cpp
+        tests/test_types.cpp
+        tests/test_config.cpp
+        tests/test_tree_parser.cpp
+        tests/test_substitution_matrix.cpp
+        tests/test_indel_model.cpp
+        tests/test_mutable_sequence.cpp
     )
     target_link_libraries(simprot_tests PRIVATE simprot_lib Catch2::Catch2WithMain)
 
