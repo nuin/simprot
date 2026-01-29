@@ -1,0 +1,19 @@
+# Build directories
+build/
+cmake-build-*/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# Compiled objects
+*.o
+*.a
+*.so
+*.dylib
+
+# Executables
+simprot
+simprot_tests
