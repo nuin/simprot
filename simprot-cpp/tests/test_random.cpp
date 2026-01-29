@@ -51,8 +51,8 @@ TEST_CASE("WichmannHillRNG reproducibility", "[random]") {
 
         // Generate some values
         double first_val = rng.uniform();
-        rng.uniform();
-        rng.uniform();
+        (void)rng.uniform();  // Advance RNG state
+        (void)rng.uniform();  // Advance RNG state
 
         // Reset with same seed
         rng.set_seed(12345);
