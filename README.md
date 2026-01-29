@@ -1,60 +1,194 @@
-Simprot
-=======
+# SIMPROT - Protein Sequence Evolution Simulator
 
-Elisabeth Tillier, Andy Pang, Andrew Smith, Robert Charlebois, Paulo Nuin
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-Simprot1.04
+SIMPROT simulates protein sequence evolution along phylogenetic trees. It generates multiple sequence alignments by simulating amino acid substitutions and insertion/deletion (indel) events based on empirically determined distributions.
 
+## Overview
 
+SIMPROT is widely used for benchmarking multiple sequence alignment algorithms. It provides:
 
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
+- **Realistic evolution simulation** using PAM, JTT, or PMB substitution matrices
+- **Empirically-based indel model** (Qian-Goldstein distribution)
+- **Gamma-distributed rate heterogeneity** across sites
+- **True alignment output** for benchmarking alignment accuracy
 
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
+## Project Structure
 
+```
+simprot/
+├── simprot-cpp/          # Modern C++20 implementation
+│   ├── include/          # Header files
+│   ├── src/              # Source files
+│   ├── tests/            # Unit tests
+│   └── CMakeLists.txt    # Build configuration
+├── legacy/               # Original C/C++ implementation (v1.04)
+│   ├── simprot.cpp       # Main source file
+│   ├── eigen.h           # Substitution matrices
+│   ├── random.c/h        # Wichmann-Hill RNG
+│   └── makefile          # Build file
+├── data/                 # Example tree files and test data
+│   ├── bigree*.txt       # Example phylogenetic trees (40-320 taxa)
+│   ├── indels.txt        # Custom indel distribution example
+│   └── pairs             # Correlated site pairs example
+└── README.md
+```
 
-Please cite:
+## Implementations
 
-Nuin PAS., Wang Z., and ERM Tillier. (2006) The accuracy of several multiple sequence alignments for proteins. BMC Bioinformatics 7:471.
+### Modern C++20 Implementation (`simprot-cpp/`)
 
-Pang, A., Smith, A. Nuin, PAS and ERM Tillier. (2005) SIMPROT: Using an empirically determined Indel distribution in simulations of protein evolution. BMC Bioinformatics:  6:236.
+A complete rewrite using modern C++20 features with:
 
+- Clean, modular architecture
+- Full test coverage
+- Exact reproducibility with the legacy version (same seed = identical output)
+- No external dependencies (except standard library)
 
-Usage: simprot1.04_mac [OPTION...]
-  -a, --alignment=<string>               name of output alignment file, in fasta format (default: null)
-  -b, --branch=<double>                  branch length scale multiplier (default: 1)
-  -c, --eFactor=<double>                 Evolutionary Scale factor for the distribution of indel lengths
-                                         (default: 3)
-  -d, --debug                            debug mode
-  -f, --tree=<string>                    name of tree file, only bifurcations are allowed (default: null)
-  -g, --indelFrequency=<double>          the indel frequency for evolutionary time c (default: 0.03)
-  -l, --maxIndel=<int>                   the maximum insertion/deletion length (default: 2048)
-  -p, --subModel=<int>                   substitution model: 0 for PAM, 1 for JTT, 2 for PMB (default: 2)
-  -r, --rootLength=<int>                 root sequence length (default: 50)
-  -s, --sequence=<string>                name of output sequence file (default: null)
-  -j, --phylip=<string>                  name of output phylip file (default: null)
-  -x, --alpha=<double>                   gamma alpha. Set to -1 for equal evolutionary rates (default: 1)
-  -i, --interleaved=<int>                interleaved output (default: 0)
-  -y, --benner=<int>                     benner (default: 0)
-  -v, --variableGamma=<int>              variable gamma (default: 0)
-  -k, --bennerk=<int>                    benner k factor (default: -2)
-  -w, --indelWeight=<double>             indel weighting parameter (default: 0)
-  -t, --extraTerminalIndels=<double>     extra terminal indels parameter (default: 0)
-  -z, --rootSequence=<string>            name of root sequence file (default: null)
-  -u, --indel distribution=<string>      name of indel distribution file (default: null)
-  -o, --indel output=<string>            file to output length of indels as created (default: null)
-  -h, --correlation file=<string>        Correlated site pairs: i    j   correlation, only one site per.
-                                         Indels are disabled for this option. (default: null)
-  -e, --variableBranch=<double>          variable branch length scale multiplier (default: 0)
-  -m, --branchExtinction=<double>        branch extinction probability (default: 0)
-  -q, --InsDelRatio=<double>             prob of insertion (1 - prob of deletion) (would be 0.5 for equal
-                                         frequencies) (default: 0.5)
+**Build:**
+```bash
+cd simprot-cpp
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
 
-Help options:
-  -?, --help                             Show this help message
-      --usage                            Display brief usage message
+**Run:**
+```bash
+./build/simprot -f ../data/bigree40.txt -r 100 -s sequences.fasta -a alignment.fasta
+```
+
+### Legacy Implementation (`legacy/`)
+
+The original SIMPROT 1.04 implementation. Pre-compiled binaries are included for convenience.
+
+**Build from source:**
+```bash
+cd legacy
+make
+```
+
+**Dependencies:** `libpopt` for command-line parsing.
+
+**Run:**
+```bash
+./simprot1.04_mac -f ../data/bigree40.txt -r 100 -s sequences.fasta -a alignment.fasta
+```
+
+## Usage
+
+### Basic Usage
+
+```bash
+# Generate sequences along a tree
+simprot -f tree.txt -r 100 -s sequences.fasta
+
+# Generate sequences with true alignment
+simprot -f tree.txt -r 100 -s sequences.fasta -a alignment.fasta
+
+# Use JTT substitution model instead of default PMB
+simprot -f tree.txt -r 100 -p 1 -s sequences.fasta
+```
+
+### Command-Line Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-f, --tree` | Input tree file (Newick format, bifurcating) | required |
+| `-r, --rootLength` | Root sequence length | 50 |
+| `-s, --sequence` | Output sequences file (FASTA) | - |
+| `-a, --alignment` | Output alignment file (FASTA with gaps) | - |
+| `-p, --subModel` | Substitution model: 0=PAM, 1=JTT, 2=PMB | 2 |
+| `-x, --alpha` | Gamma shape parameter (-1 for equal rates) | 1.0 |
+| `-g, --indelFrequency` | Indel frequency | 0.03 |
+| `-b, --branch` | Branch length scale multiplier | 1.0 |
+| `-q, --InsDelRatio` | Insertion probability (vs deletion) | 0.5 |
+
+### Input Format
+
+**Tree file:** Newick format with branch lengths. Only bifurcating trees are supported.
+
+```
+((seq1:0.1,seq2:0.1):0.2,(seq3:0.1,seq4:0.1):0.2);
+```
+
+### Output Formats
+
+**Sequences (`-s`):** FASTA format without gaps (leaf sequences only)
+```
+>seq1
+MKTAYIAKQRQISFVKSH
+>seq2
+MKTAYIAKQRQISFVKSH
+```
+
+**Alignment (`-a`):** FASTA format with gaps showing true alignment
+```
+>seq1
+MKT-AYIAKQRQISFVKSH
+>seq2
+MKTAAYIAKQRQIS-VKSH
+```
+
+## Algorithm
+
+### Substitution Models
+
+SIMPROT uses eigendecomposition of rate matrices for efficient probability calculation:
+
+- **PAM** (Point Accepted Mutation) - Dayhoff et al.
+- **JTT** (Jones-Taylor-Thornton) - Jones et al.
+- **PMB** (Probability Matrix from Blocks) - Veerassamy et al.
+
+### Indel Model
+
+The default Qian-Goldstein model uses a 4-term exponential distribution based on empirical data:
+
+```
+P(length = k) = Σᵢ aᵢ * exp(-k/bᵢ)
+```
+
+Alternative models:
+- **Benner/Zipfian:** `P(length = k) ∝ k^κ`
+- **Custom:** Load from file
+
+### Rate Heterogeneity
+
+Site-specific evolutionary rates follow a gamma distribution with shape parameter α. Lower α values indicate greater rate variation.
+
+## Citation
+
+Please cite the following papers when using SIMPROT:
+
+```bibtex
+@article{nuin2006accuracy,
+  title={The accuracy of several multiple sequence alignment methods for proteins},
+  author={Nuin, Paulo AS and Wang, Zhouzhi and Tillier, Elisabeth RM},
+  journal={BMC Bioinformatics},
+  volume={7},
+  pages={471},
+  year={2006}
+}
+
+@article{pang2005simprot,
+  title={SIMPROT: using an empirically determined indel distribution in simulations of protein evolution},
+  author={Pang, Andy and Smith, Andrew D and Nuin, Paulo AS and Tillier, Elisabeth RM},
+  journal={BMC Bioinformatics},
+  volume={6},
+  pages={236},
+  year={2005}
+}
+```
+
+## Authors
+
+- Elisabeth Tillier
+- Andy Pang
+- Andrew Smith
+- Robert Charlebois
+- Paulo Nuin
+
+## License
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
