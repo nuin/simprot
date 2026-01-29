@@ -25,7 +25,7 @@ set(TREE_SOURCES
 )
 
 set(SEQUENCE_SOURCES
-    src/sequence/sequence_list.cpp
+    src/sequence/mutable_sequence.cpp
     src/sequence/alignment.cpp
 )
 
