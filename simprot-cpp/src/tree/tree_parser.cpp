@@ -141,13 +141,16 @@ void NewickParser::skip_whitespace(std::string_view& input) {
 }
 
 double NewickParser::process_branch_length(double base_length, TreeNode& node) {
+    // IMPORTANT: Always consume RNG for extinction check to match original behavior.
+    // The original simprot.cpp always calls rndu() at line 618 during tree parsing,
+    // regardless of whether BranchExtinction is 0. This maintains RNG state sync.
+    double extinction_roll = rng_ ? rng_->uniform() : 1.0;
+
     // Check for extinction
-    if (rng_ && extinction_prob_ > 0.0) {
-        if (rng_->uniform() <= extinction_prob_) {
-            node.extinct = true;
-            node.name += " Neg";  // Mark as negative/extinct
-            return 0.0;
-        }
+    if (extinction_prob_ > 0.0 && extinction_roll <= extinction_prob_) {
+        node.extinct = true;
+        node.name += " Neg";  // Mark as negative/extinct
+        return 0.0;
     }
 
     // Apply branch scaling

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iostream>
 
 namespace simprot {
 
@@ -18,12 +19,17 @@ SequenceEvolver::SequenceEvolver(const SimulationConfig& config, WichmannHillRNG
 void SequenceEvolver::init_root_sequence(TreeNode& root) {
     std::size_t length = static_cast<std::size_t>(config_.root_sequence_length);
     root.sequence = generate_random_sequence(length);
-    root.rates = generate_rates(length);
+    // NOTE: Rates are NOT generated here. They will be generated lazily during
+    // the first mutate() call to match the original SIMPROT behavior where
+    // MakeSequenceList() generates rates via RandomGammaRate() when rate==NULL.
+    // This ensures RNG sequence compatibility with the original implementation.
+    root.rates.clear();
 }
 
 void SequenceEvolver::init_root_sequence(TreeNode& root, const std::string& sequence) {
     root.sequence = sequence;
-    root.rates = generate_rates(sequence.size());
+    // NOTE: Rates generated lazily during first mutate() - see above.
+    root.rates.clear();
 }
 
 void SequenceEvolver::evolve(TreeNode& root) {
@@ -51,10 +57,33 @@ void SequenceEvolver::set_indel_callback(
 }
 
 void SequenceEvolver::mutate(TreeNode& parent, TreeNode& child, ChildDirection direction) {
-    // If branch length is zero, child is identical to parent
+    // Convert parent sequence to mutable sequence FIRST (before zero-distance check).
+    // If parent has no rates (lazy generation), generate them now via gamma.
+    // This matches the original SIMPROT where MakeSequenceList() is called at line 2295
+    // BEFORE the zero-distance check at line 2309. The original generates rates via
+    // RandomGammaRate() when the rate array is NULL.
+    MutableSequence seq = parent.rates.empty()
+        ? MutableSequence(parent.sequence, nullptr, rng_, config_.gamma_alpha)
+        : MutableSequence(parent.sequence, parent.rates);
+
+    // Normalize rates so average = 1.0 (original lines 2298-2304)
+    seq.normalize_rates();
+
+    // NOTE: We do NOT store rates back to the parent here!
+    // In the original SIMPROT:
+    // - root->rate is always NULL (never modified after tree parsing)
+    // - Each call to Mutate(root, child) generates FRESH rates
+    // - So root's left and right children get DIFFERENT rate draws
+    // - But other internal nodes have their rates stored in the child,
+    //   so when that child becomes a parent, the same rates are reused.
+
+    // If branch length is zero, child is identical to parent (original line 2309)
+    // COMPATIBILITY: The original simprot.cpp ONLY copies the sequence, NOT the rates!
+    // This means child->rate stays NULL, and fresh rates are generated when
+    // the child becomes a parent. We must match this behavior.
     if (child.distance <= 0.0) {
         child.sequence = parent.sequence;
-        child.rates = parent.rates;
+        // child.rates stays empty - DO NOT copy parent.rates!
 
         // Set up trivial profiles (identical sequences)
         if (direction == ChildDirection::Left) {
@@ -66,12 +95,6 @@ void SequenceEvolver::mutate(TreeNode& parent, TreeNode& child, ChildDirection d
         }
         return;
     }
-
-    // Convert parent sequence to mutable sequence
-    MutableSequence seq(parent.sequence, parent.rates);
-
-    // Normalize rates so average = 1.0
-    seq.normalize_rates();
 
     // Initialize profiles
     std::string profile_child = parent.sequence;
@@ -249,8 +272,10 @@ void SequenceEvolver::apply_substitutions(
         ? 1.0
         : 100.0;
 
+
     // Iterate through sequence and profile together
     std::size_t profile_idx = 0;
+    int seq_position = 0;  // Track position in original sequence (for correlation RNG)
 
     seq.for_each([&](SequenceNode& node) {
         // Skip gaps in profile
@@ -267,11 +292,22 @@ void SequenceEvolver::apply_substitutions(
         AminoAcidIndex to = substitution_matrix_->sample_substitution(from, t, rng_);
         char new_residue = amino_acid_to_char(to);
 
+        // COMPATIBILITY: The original simprot.cpp has a "correlated mutations" feature
+        // (lines 2395-2403) that calls rndu() for each position where Correlation[i].pos < i.
+        // When no correlation file is loaded, Correlation[i].pos = 0 for all i, so
+        // rndu() is called for positions 1, 2, 3, ... (all positions except 0).
+        // Even though r < Correlation[i].value (which is 0) is always false, the RNG
+        // call still happens, desynchronizing the RNG state. We replicate this here.
+        if (seq_position > 0) {
+            [[maybe_unused]] double correlation_rng = rng_.uniform();
+        }
+
         // Update sequence and profile
         node.residue = new_residue;
         profile_child[profile_idx] = new_residue;
 
         ++profile_idx;
+        ++seq_position;
     });
 }
 

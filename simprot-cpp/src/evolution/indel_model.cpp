@@ -291,37 +291,71 @@ int sample_indel_position(
     int length = static_cast<int>(seq.size());
     if (length == 0) return 0;
 
-    // Build cumulative distribution based on site rates
-    std::vector<double> cdf(length + 1, 0.0);
+    // COMPATIBILITY: Build CDF exactly as original SIMPROT does (InitCumulativeIndels)
+    // For INSERTION: arraySize = length + 2, rate[0] is counted TWICE
+    // For DELETION: arraySize = length + 1, each rate counted once
 
-    int idx = 0;
-    seq.for_each([&](const SequenceNode& node) {
-        double rate = node.rate;
-        if (type == IndelType::Insertion) {
-            // For insertion, sum rate with previous position
-            cdf[idx + 1] = cdf[idx] + rate;
-        } else {
-            // For deletion, use rate directly
-            cdf[idx + 1] = cdf[idx] + rate;
+    int array_size;
+    std::vector<double> cdf;
+    double sum = 0.0;
+
+    if (type == IndelType::Insertion) {
+        // Original: cdf[0]=0, cdf[1]=rate[0], cdf[2]=rate[0], cdf[3]=rate[1], ...
+        array_size = length + 2;
+        cdf.resize(array_size, 0.0);
+
+        // Get rates into a vector for easier indexing
+        std::vector<double> rates;
+        rates.reserve(length);
+        seq.for_each([&](const SequenceNode& node) {
+            rates.push_back(node.rate);
+        });
+
+        // Original behavior: rate[0] is added twice
+        // cdf[1] = rate[0] (before loop in original)
+        cdf[1] = rates[0];
+        sum += rates[0];
+
+        // Loop from i=2 with current=head in original
+        // cdf[2] = rate[0], cdf[3] = rate[1], ..., cdf[length+1] = rate[length-1]
+        for (int i = 2; i < array_size; ++i) {
+            cdf[i] = rates[i - 2];
+            sum += rates[i - 2];
         }
-        ++idx;
-    });
+    } else {
+        // Deletion: straightforward CDF
+        array_size = length + 1;
+        cdf.resize(array_size, 0.0);
 
-    // Normalize
-    double total = cdf[length];
-    if (total > 0.0) {
-        for (int i = 1; i <= length; ++i) {
-            cdf[i] /= total;
+        int idx = 1;
+        seq.for_each([&](const SequenceNode& node) {
+            cdf[idx] = node.rate;
+            sum += node.rate;
+            ++idx;
+        });
+    }
+
+    // Normalize by sum
+    if (sum > 0.0) {
+        for (int i = 0; i < array_size; ++i) {
+            cdf[i] /= sum;
         }
     }
 
-    // Sample position
+    // Convert to cumulative
+    for (int i = 1; i < array_size; ++i) {
+        cdf[i] += cdf[i - 1];
+    }
+
+    // Sample position using binary search (GetIndelPosition)
     double x = rng.uniform();
-    int low = 0, high = length;
+    int search_length = array_size - 1;
+    int low = 0, high = search_length;
+
     while (true) {
         int mid = (low + high) / 2;
         if (mid == 0) return 0;
-        if (mid == length) return length - 1;
+        if (mid == search_length) return search_length - 1;
         if (mid == low) return mid;
 
         if (cdf[mid] <= x) {

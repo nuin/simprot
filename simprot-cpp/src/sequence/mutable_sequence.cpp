@@ -11,7 +11,7 @@ MutableSequence::MutableSequence(const std::string& sequence,
     for (std::size_t i = 0; i < sequence.size(); ++i) {
         double rate = (rates && i < rates->size())
             ? (*rates)[i]
-            : rng.gamma(gamma_alpha);
+            : (gamma_alpha < 0.0 ? 1.0 : rng.gamma(gamma_alpha));
         append(sequence[i], rate);
     }
 }
@@ -119,17 +119,27 @@ SequenceNode* MutableSequence::insert_before(SequenceNode* before,
                                              double gamma_alpha) {
     if (length == 0) return before;
 
-    // Create the insertion sequence as a temporary list
+    // COMPATIBILITY: The original SIMPROT generates insertions in two phases:
+    // 1. RandomSequence(size) - generates ALL amino acids first
+    // 2. MakeSequenceList(seq, NULL) - generates ALL rates second
+    // We must match this order to maintain RNG synchronization.
+
+    // Phase 1: Generate all amino acids
+    std::vector<char> residues;
+    residues.reserve(length);
+    for (std::size_t i = 0; i < length; ++i) {
+        AminoAcidIndex aa = matrix.sample_from_frequencies(rng);
+        residues.push_back(amino_acid_to_char(aa));
+    }
+
+    // Phase 2: Generate all rates and create nodes
     SequenceNode* insert_head = nullptr;
     SequenceNode* insert_tail = nullptr;
 
     for (std::size_t i = 0; i < length; ++i) {
-        // Sample random amino acid from equilibrium frequencies
-        AminoAcidIndex aa = matrix.sample_from_frequencies(rng);
-        char residue = amino_acid_to_char(aa);
-        double rate = rng.gamma(gamma_alpha);
+        double rate = (gamma_alpha < 0.0) ? 1.0 : rng.gamma(gamma_alpha);
 
-        auto* node = new SequenceNode(residue, rate);
+        auto* node = new SequenceNode(residues[i], rate);
         if (!insert_head) {
             insert_head = insert_tail = node;
         } else {
