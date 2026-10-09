@@ -245,7 +245,7 @@ std::vector<AlignedSequence> Alignment::leaf_sequences(const TreeNode& root) con
 
     std::function<void(const TreeNode&)> collect_leaves = [&](const TreeNode& node) {
         if (node.is_leaf()) {
-            leaf_names.insert(node.name);
+            if (!node.omitted_from_output()) leaf_names.insert(node.name);
         } else {
             if (node.left) collect_leaves(*node.left);
             if (node.right) collect_leaves(*node.right);

@@ -189,12 +189,24 @@ int main() {
 
 ## Compatibility Notes
 
-The C++20 implementation produces **identical output** to the legacy version when given the same seed. This required careful matching of:
+The C++20 implementation produces **identical output** to the legacy version when given the same seed. `tests/legacy_parity/run.sh` checks this. It runs both programs over 21 combinations of trees and options (all three matrices, the three indel length models, gamma and equal rates, no indels, branch scaling, variable branches and extinction) and compares the outputs. This required careful matching of:
 
-1. **RNG consumption order** - Same sequence of random number calls
+1. **RNG consumption order** - Same sequence of random number calls, including one draw per site when the indel frequency is 0, and the dummy "correlated mutation" draw for every profile column after the first (deleted columns count)
 2. **Insertion generation** - Two-phase (all residues, then all rates)
 3. **Indel position CDF** - Special handling for insertion vs deletion
 4. **Zero-distance branches** - Rates not inherited, regenerated fresh
+5. **Indel length CDF** - Lengths 1 .. max-1 (max = 5% of the sequence), the density cut at `DBL_EPSILON`, and the original binary search; a custom distribution always spans 200 entries and uses the unscaled branch length
+6. **Insertion and deletion placement** - An insertion at position 0 is a prefix; a deletion that would run past the end is moved back to end on the last residue
+7. **Amino acid frequencies** - Taken from the eigenvector row with the largest eigenvalue (row 10 for PAM, row 0 for JTT and PMB), with the cumulative table ending in 1.0
+8. **Floating-point order** - `100 * distance * rate` and rate normalisation (divide by the sum, then multiply by the length) are evaluated as in the original, because PAM amplifies last-bit differences
+9. **Branch extinction** - Extinct leaves and the left child of each extinct node (`FlagTree`) are left out of the output; with variable branch lengths the gamma multiplier is drawn before the extinction test
+
+Two legacy behaviours are deliberately **not** reproduced:
+
+- **Truncated alignments.** Legacy sometimes writes a true alignment that does not match its own sequences: after some indels at the end of a sequence it drops residues. AddressSanitizer reports a heap-buffer-overflow in `FindGapColumn`. The C++ alignment always matches the sequences, and `compare_legacy.py` reports such cases as a legacy defect.
+- **Crashes.** Legacy occasionally dies before writing its output (`Killed: 9`). `run.sh` lists those seeds separately.
+
+**PAM:** the PAM eigendecomposition in `eigen.h` / `matrix_data.hpp` has a positive eigenvalue (0.886), so PAM runs are dominated by a few amino acids (about 56% A and 26% N). The port reproduces this exactly, but the PAM matrix data needs fixing before PAM is used for science.
 
 See `legacy/README.md` for details on the original algorithm's quirks.
 
@@ -206,9 +218,12 @@ Tests use Catch2 and cover:
 - Substitution matrix probability calculations
 - Indel model distributions
 - Tree parsing correctness
-- Full integration tests comparing to legacy output
+- Legacy parity rules (`tests/test_legacy_parity.cpp`)
 
 Run with:
 ```bash
 ./build/simprot_tests
+tests/legacy_parity/run.sh build/simprot 20   # whole runs against legacy/, 20 seeds per config
 ```
+
+With recent clang, Catch2 v3.4.0 trips `-Wdeprecated-literal-operator` under `-Werror`. Configure with `-DCMAKE_CXX_FLAGS=-Wno-deprecated-literal-operator` to build the tests.

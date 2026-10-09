@@ -101,7 +101,10 @@ void SequenceEvolver::mutate(TreeNode& parent, TreeNode& child, ChildDirection d
     std::string profile_self = parent.sequence;
 
     // Get number of indels for this branch
-    bool use_benner_scale = (config_.indel_distribution == IndelDistribution::Benner);
+    // GetNumIndels uses the unscaled time whenever benner > 0, which in the
+    // original covers both the Benner and the custom (-u, benner = 2) models
+    bool use_benner_scale = (config_.indel_distribution == IndelDistribution::Benner ||
+                             config_.indel_distribution == IndelDistribution::Custom);
     int num_indels = compute_num_indels(
         child.distance,
         static_cast<int>(seq.size()),
@@ -192,8 +195,15 @@ void SequenceEvolver::perform_indel(
     }
 
     if (type == IndelType::Insertion) {
+        // PerformIndel in SIMPROT 1.04: when only the head is marked (position
+        // 0) and there is a next residue, the insertion is a prefix of the
+        // sequence and goes before every profile column; otherwise it follows
+        // the marked residue.
+        SequenceNode* head = seq.head();
+        const bool prefix = marked_node == head && head->next && !head->next->mark;
+
         // Perform insertion in sequence
-        SequenceNode* insert_before = marked_node->next;
+        SequenceNode* insert_before = prefix ? head : marked_node->next;
         SequenceNode* first_inserted = seq.insert_before(
             insert_before,
             static_cast<std::size_t>(indel_size),
@@ -213,8 +223,8 @@ void SequenceEvolver::perform_indel(
             node = node->next;
         }
 
-        // Insert after the marked position in profiles
-        int insert_pos = profile_pos + 1;
+        // Insert after the marked position in profiles (or at the very start)
+        int insert_pos = prefix ? 0 : profile_pos + 1;
         if (insert_pos > static_cast<int>(profile_child.size())) {
             insert_pos = static_cast<int>(profile_child.size());
         }
@@ -275,7 +285,6 @@ void SequenceEvolver::apply_substitutions(
 
     // Iterate through sequence and profile together
     std::size_t profile_idx = 0;
-    int seq_position = 0;  // Track position in original sequence (for correlation RNG)
 
     seq.for_each([&](SequenceNode& node) {
         // Skip gaps in profile
@@ -286,8 +295,10 @@ void SequenceEvolver::apply_substitutions(
 
         if (profile_idx >= profile_child.size()) return;
 
-        // Compute substitution
-        double t = distance * node.rate * scale;
+        // Compute substitution. Mutate() in SIMPROT 1.04 evaluates
+        // 100.0 * distance * rate (PAM/JTT) or distance * rate (PMB) left to
+        // right; keep that order so t rounds the same way.
+        double t = scale * distance * node.rate;
         AminoAcidIndex from = char_to_amino_acid(node.residue);
         AminoAcidIndex to = substitution_matrix_->sample_substitution(from, t, rng_);
         char new_residue = amino_acid_to_char(to);
@@ -298,7 +309,10 @@ void SequenceEvolver::apply_substitutions(
         // rndu() is called for positions 1, 2, 3, ... (all positions except 0).
         // Even though r < Correlation[i].value (which is 0) is always false, the RNG
         // call still happens, desynchronizing the RNG state. We replicate this here.
-        if (seq_position > 0) {
+        // The original indexes Correlation[] by the profile column, which
+        // counts columns of previously deleted residues, so the test is on
+        // profile_idx rather than on the residue's position.
+        if (profile_idx > 0) {
             [[maybe_unused]] double correlation_rng = rng_.uniform();
         }
 
@@ -307,7 +321,6 @@ void SequenceEvolver::apply_substitutions(
         profile_child[profile_idx] = new_residue;
 
         ++profile_idx;
-        ++seq_position;
     });
 }
 

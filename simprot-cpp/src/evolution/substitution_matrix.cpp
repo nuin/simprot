@@ -12,10 +12,15 @@ namespace simprot {
 
 void SubstitutionMatrix::init_cumulative_frequencies() {
     const auto& freq = frequencies();
+    // InitSymbolCumulativeDensity in SIMPROT 1.04: running sums for 1..19
+    // and a last entry forced to 1.0. For PAM the frequencies do not sum to
+    // 1, so the array is not monotonic and the search below must follow the
+    // original exactly.
     cumulative_frequencies_[0] = 0.0;
-    for (std::size_t i = 0; i < kNumAminoAcids; ++i) {
-        cumulative_frequencies_[i + 1] = cumulative_frequencies_[i] + freq[i];
+    for (std::size_t i = 1; i < kNumAminoAcids; ++i) {
+        cumulative_frequencies_[i] = cumulative_frequencies_[i - 1] + freq[i - 1];
     }
+    cumulative_frequencies_[kNumAminoAcids] = 1.0;
 }
 
 double SubstitutionMatrix::substitution_probability(
@@ -72,33 +77,55 @@ AminoAcidIndex SubstitutionMatrix::sample_substitution(
 AminoAcidIndex SubstitutionMatrix::sample_from_frequencies(WichmannHillRNG& rng) const {
     double x = rng.uniform();
 
-    // Binary search in cumulative distribution
-    auto it = std::upper_bound(
-        cumulative_frequencies_.begin(),
-        cumulative_frequencies_.end(),
-        x);
-
-    if (it == cumulative_frequencies_.begin()) {
-        return 0;
+    // RandomSymbol in SIMPROT 1.04
+    const auto& cdf = cumulative_frequencies_;
+    int low = 0;
+    int high = static_cast<int>(kNumAminoAcids);
+    while (true) {
+        int mid = (low + high) / 2;
+        if (cdf[static_cast<std::size_t>(mid)] <= x) {
+            if (cdf[static_cast<std::size_t>(mid) + 1] > x) {
+                return static_cast<AminoAcidIndex>(mid);
+            }
+            // The original loops forever here when the array is not
+            // monotonic around mid; stop instead (no reproducible run can
+            // reach this).
+            if (mid == low) return static_cast<AminoAcidIndex>(mid);
+            low = mid;
+        } else {
+            high = mid;
+        }
     }
-
-    auto idx = static_cast<AminoAcidIndex>(
-        std::distance(cumulative_frequencies_.begin(), it) - 1);
-
-    return std::min(idx, static_cast<AminoAcidIndex>(kNumAminoAcids - 1));
 }
+
+namespace {
+
+// MakeProtFreqs in SIMPROT 1.04: the frequencies are the absolute values of
+// the eigenvector row whose eigenvalue is largest (first one on ties). For
+// JTT and PMB that is row 0; the PAM data's largest eigenvalue is at index 10.
+std::array<double, kNumAminoAcids> frequencies_from_eigenvectors(
+    const std::array<double, kNumAminoAcids>& eigenvalues,
+    const std::array<std::array<double, kNumAminoAcids>, kNumAminoAcids>& eigenvectors) {
+    std::size_t maxeig = 0;
+    for (std::size_t i = 0; i < kNumAminoAcids; ++i) {
+        if (eigenvalues[i] > eigenvalues[maxeig]) maxeig = i;
+    }
+    std::array<double, kNumAminoAcids> freqs{};
+    for (std::size_t i = 0; i < kNumAminoAcids; ++i) {
+        freqs[i] = std::abs(eigenvectors[maxeig][i]);
+    }
+    return freqs;
+}
+
+}  // namespace
 
 //==============================================================================
 // PAMMatrix implementation
 //==============================================================================
 
 PAMMatrix::PAMMatrix() {
-    // Compute equilibrium frequencies from the eigenvector with eigenvalue 0
-    // (first row of eigenvector matrix)
-    const auto& eigvecs = matrix_data::pam_eigenvectors;
-    for (std::size_t i = 0; i < kNumAminoAcids; ++i) {
-        frequencies_[i] = std::abs(eigvecs[0][i]);
-    }
+    frequencies_ = frequencies_from_eigenvectors(matrix_data::pam_eigenvalues,
+                                                 matrix_data::pam_eigenvectors);
     init_cumulative_frequencies();
 }
 
@@ -120,10 +147,8 @@ const std::array<double, kNumAminoAcids>& PAMMatrix::frequencies() const {
 //==============================================================================
 
 JTTMatrix::JTTMatrix() {
-    const auto& eigvecs = matrix_data::jtt_eigenvectors;
-    for (std::size_t i = 0; i < kNumAminoAcids; ++i) {
-        frequencies_[i] = std::abs(eigvecs[0][i]);
-    }
+    frequencies_ = frequencies_from_eigenvectors(matrix_data::jtt_eigenvalues,
+                                                 matrix_data::jtt_eigenvectors);
     init_cumulative_frequencies();
 }
 
@@ -145,10 +170,8 @@ const std::array<double, kNumAminoAcids>& JTTMatrix::frequencies() const {
 //==============================================================================
 
 PMBMatrix::PMBMatrix() {
-    const auto& eigvecs = matrix_data::pmb_eigenvectors;
-    for (std::size_t i = 0; i < kNumAminoAcids; ++i) {
-        frequencies_[i] = std::abs(eigvecs[0][i]);
-    }
+    frequencies_ = frequencies_from_eigenvectors(matrix_data::pmb_eigenvalues,
+                                                 matrix_data::pmb_eigenvectors);
     init_cumulative_frequencies();
 }
 

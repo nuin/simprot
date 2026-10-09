@@ -15,6 +15,7 @@
 #include "simprot/sequence/mutable_sequence.hpp"
 
 #include <memory>
+#include <functional>
 #include <vector>
 #include <string>
 
@@ -59,13 +60,32 @@ protected:
     [[nodiscard]] static int max_indel_length(int sequence_length);
 
     /**
-     * @brief Binary search in cumulative distribution to find sampled length.
-     * @param cdf Cumulative distribution function.
-     * @param x Random value in [0, 1].
-     * @return Sampled length (1-indexed).
+     * @brief Build a cumulative length distribution as SIMPROT 1.04 does.
+     *
+     * Mirrors InitCumulativeIndelLength / ...Benner / ...Other: densities are
+     * filled for lengths 1 .. limit-1 (stopping early once the previous one
+     * falls to DBL_EPSILON when stop_at_epsilon is set), normalised, then
+     * accumulated until the running total reaches 1 - DBL_EPSILON.
+     * @param limit Exclusive upper bound on the length.
+     * @param stop_at_epsilon Stop filling once a density is <= DBL_EPSILON.
+     * @param density Unnormalised density for a length >= 1.
+     * @param cdf Output; sized so that cdf[size] can be read.
+     * @return The array size SIMPROT passes on to GetIndelLength.
      */
-    [[nodiscard]] static int binary_search_cdf(
-        const std::vector<double>& cdf, double x);
+    static int build_legacy_cdf(
+        int limit, bool stop_at_epsilon,
+        const std::function<double(int)>& density,
+        std::vector<double>& cdf);
+
+    /**
+     * @brief Sample a length from a legacy CDF (SIMPROT 1.04 GetIndelLength).
+     * @param cdf Cumulative distribution from build_legacy_cdf.
+     * @param size Size returned by build_legacy_cdf.
+     * @param x Random value in [0, 1).
+     * @return Length L with cdf[L-1] <= x < cdf[L].
+     */
+    [[nodiscard]] static int legacy_indel_length(
+        const std::vector<double>& cdf, int size, double x);
 };
 
 /**
@@ -163,7 +183,7 @@ public:
         WichmannHillRNG& rng) const override;
 
 private:
-    std::vector<double> cdf_;  // Pre-computed cumulative distribution
+    std::vector<double> frequencies_;  // Frequencies for lengths 1, 2, 3, ...
 };
 
 /**
