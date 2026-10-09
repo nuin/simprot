@@ -206,7 +206,12 @@ Two legacy behaviours are deliberately **not** reproduced:
 - **Truncated alignments.** Legacy sometimes writes a true alignment that does not match its own sequences: after some indels at the end of a sequence it drops residues. AddressSanitizer reports a heap-buffer-overflow in `FindGapColumn`. The C++ alignment always matches the sequences, and `compare_legacy.py` reports such cases as a legacy defect.
 - **Crashes.** Legacy occasionally dies before writing its output (`Killed: 9`). `run.sh` lists those seeds separately.
 
-**PAM:** the PAM eigendecomposition in `eigen.h` / `matrix_data.hpp` has a positive eigenvalue (0.886), so PAM runs are dominated by a few amino acids (about 56% A and 26% N). The port reproduces this exactly, but the PAM matrix data needs fixing before PAM is used for science.
+**PAM data rebuilt.** The PAM eigendecomposition used up to SIMPROT 1.04 was invalid: it had two positive eigenvalues, frequencies summing to 0.62, rows of P(t) that did not sum to 1, and negative probabilities. Runs were about 56% A and 26% N. `tools/make_eigen.py pam` now rebuilds the PAM data from the Dayhoff et al. (1978) exchangeabilities and frequencies in PAML's `dayhoff.dat`, and checks the result:
+- rows of P(t) sum to 1 to 1e-15, with no negative entries;
+- detailed balance holds, and P(t) tends to the Dayhoff frequencies;
+- the scale is one PAM (0.01 substitutions per site) per unit of t, so a branch length is in substitutions per site, as for PMB.
+
+The same pipeline applied to JTT (`tools/make_eigen.py jtt --check`) reproduces the earlier JTT decomposition (`jtteigmatOLD`) to within about 1.5%. Since `legacy/eigen.h` keeps the original PAM data, `tests/legacy_parity/run.sh` gives its scratch legacy build the rebuilt arrays so that PAM runs still compare the two code paths.
 
 See `legacy/README.md` for details on the original algorithm's quirks.
 
@@ -218,7 +223,8 @@ Tests use Catch2 and cover:
 - Substitution matrix probability calculations
 - Indel model distributions
 - Tree parsing correctness
-- Legacy parity rules (`tests/test_legacy_parity.cpp`)
+- Legacy parity rules and PAM validity (`tests/test_legacy_parity.cpp`)
+- Eigen data checks: `python3 tools/make_eigen.py pam --check` (needs numpy)
 
 Run with:
 ```bash

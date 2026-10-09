@@ -5,7 +5,8 @@
 #   tests/legacy_parity/run.sh path/to/simprot [seeds-per-config]   (default 20)
 #
 # Legacy has no seed option and seeds from getpid(), so a scratch copy of
-# legacy/simprot.cpp is built with SetSeed() reading $SIMPROT_SEED. Needs a
+# legacy/simprot.cpp is built with SetSeed() reading $SIMPROT_SEED, and with
+# the rebuilt PAM data in place of the original (see below). Needs a
 # C++ compiler, popt (brew install popt / apt install libpopt-dev) and python3.
 # Flags differ between the versions, so each config lists both spellings.
 set -euo pipefail
@@ -27,6 +28,29 @@ path, needle = sys.argv[1], sys.argv[2]
 s = open(path, errors='surrogateescape').read()
 s = s.replace(needle, 'SetSeed(getenv("SIMPROT_SEED") ? atoi(getenv("SIMPROT_SEED")) : getpid());')
 open(path, 'w', errors='surrogateescape').write(s)
+EOF
+# The C++ port ships a rebuilt PAM (tools/make_eigen.py); legacy/eigen.h
+# keeps the original, broken PAM data. Give the scratch legacy copy the same
+# PAM arrays so PAM runs still compare the two code paths.
+python3 - "$tmp/eigen.h" "$repo/simprot-cpp/include/simprot/evolution/matrix_data.hpp" <<'EOF'
+import re, sys
+eigen_h, data_hpp = sys.argv[1], sys.argv[2]
+d = open(data_hpp).read()
+def numbers(name):
+    i = d.index(name + ' =')
+    body = d[d.index('{', i):d.index(';', i)]
+    return re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', body)
+lam = numbers('pam_eigenvalues')
+vec = numbers('pam_eigenvectors')
+assert len(lam) == 20 and len(vec) == 400, (len(lam), len(vec))
+s = open(eigen_h, errors='surrogateescape').read()
+def replace(s, name, body):
+    i = s.index(name)
+    return s[:s.index('{', i)] + body + s[s.index(';', i):]
+s = replace(s, 'pameigmat[20]', '{' + ', '.join(lam) + '}')
+s = replace(s, 'pamprobmat[20][20]',
+            '{\n' + ',\n'.join('{' + ', '.join(vec[k*20:(k+1)*20]) + '}' for k in range(20)) + '\n}')
+open(eigen_h, 'w', errors='surrogateescape').write(s)
 EOF
 popt="$(brew --prefix popt 2>/dev/null || echo /usr)"
 c++ -O2 -w -o "$tmp/legacy" "$tmp/simprot.cpp" "$tmp/random.c" -I"$popt/include" -L"$popt/lib" -lpopt -lm

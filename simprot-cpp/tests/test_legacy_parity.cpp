@@ -76,13 +76,55 @@ TEST_CASE("A deletion running past the end is moved back", "[legacy_parity]") {
 
 TEST_CASE("Amino acid frequencies use the largest-eigenvalue row",
           "[legacy_parity]") {
-    // MakeProtFreqs picks the row of the largest eigenvalue: row 10 for PAM,
-    // row 0 for JTT and PMB
+    // MakeProtFreqs picks the row of the largest eigenvalue; in the data
+    // shipped now that is row 0 (the zero eigenvalue) for every model
     PAMMatrix pam;
     JTTMatrix jtt;
+    PMBMatrix pmb;
     for (std::size_t i = 0; i < kNumAminoAcids; ++i) {
-        REQUIRE(pam.frequencies()[i] == std::abs(matrix_data::pam_eigenvectors[10][i]));
+        REQUIRE(pam.frequencies()[i] == std::abs(matrix_data::pam_eigenvectors[0][i]));
         REQUIRE(jtt.frequencies()[i] == std::abs(matrix_data::jtt_eigenvectors[0][i]));
+        REQUIRE(pmb.frequencies()[i] == std::abs(matrix_data::pmb_eigenvectors[0][i]));
+    }
+}
+
+TEST_CASE("PAM eigen data is a valid reversible model", "[substitution_matrix]") {
+    // Rebuilt from Dayhoff et al. (1978) by tools/make_eigen.py:
+    // P_ij(t) = sum_k V[k][i] V[k][j] exp(lambda_k t) / pi_i
+    const auto& lam = matrix_data::pam_eigenvalues;
+    const auto& V = matrix_data::pam_eigenvectors;
+    const auto& pi = V[0];
+
+    REQUIRE(lam[0] == 0.0);
+    double total = 0.0;
+    for (std::size_t k = 1; k < kNumAminoAcids; ++k) REQUIRE(lam[k] < 0.0);
+    for (double p : pi) {
+        REQUIRE(p > 0.0);
+        total += p;
+    }
+    REQUIRE(std::abs(total - 1.0) < 1e-12);
+    // Dayhoff frequencies: Ala 0.087127, Trp 0.010494
+    REQUIRE(std::abs(pi[0] - 0.087127) < 1e-6);
+    REQUIRE(std::abs(pi[17] - 0.010494) < 1e-6);
+
+    for (double t : {1.0, 10.0, 100.0, 1000.0}) {
+        double expected_change = 0.0;
+        for (std::size_t i = 0; i < kNumAminoAcids; ++i) {
+            double row = 0.0;
+            for (std::size_t j = 0; j < kNumAminoAcids; ++j) {
+                double p = 0.0;
+                for (std::size_t k = 0; k < kNumAminoAcids; ++k) {
+                    p += V[k][i] * V[k][j] * std::exp(lam[k] * t);
+                }
+                p /= pi[i];
+                REQUIRE(p >= 0.0);
+                row += p;
+                if (i == j) expected_change += pi[i] * (1.0 - p);
+            }
+            REQUIRE(std::abs(row - 1.0) < 1e-12);
+        }
+        // One PAM per unit of t: 1% change at t = 1
+        if (t == 1.0) REQUIRE(std::abs(expected_change - 0.01) < 1e-4);
     }
 }
 
