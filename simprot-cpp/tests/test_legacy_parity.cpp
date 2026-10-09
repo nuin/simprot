@@ -11,6 +11,7 @@
 #include "simprot/sequence/mutable_sequence.hpp"
 #include "simprot/tree/tree_parser.hpp"
 
+#include <array>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -88,43 +89,85 @@ TEST_CASE("Amino acid frequencies use the largest-eigenvalue row",
     }
 }
 
-TEST_CASE("PAM eigen data is a valid reversible model", "[substitution_matrix]") {
-    // Rebuilt from Dayhoff et al. (1978) by tools/make_eigen.py:
-    // P_ij(t) = sum_k V[k][i] V[k][j] exp(lambda_k t) / pi_i
-    const auto& lam = matrix_data::pam_eigenvalues;
-    const auto& V = matrix_data::pam_eigenvectors;
+namespace {
+
+// P_ij(t) = sum_k V[k][i] V[k][j] exp(lambda_k t) / pi_i: every row sums to 1,
+// no entry is negative, and the expected change at time t is returned.
+double check_transition_matrix(
+    const std::array<double, kNumAminoAcids>& lam,
+    const std::array<std::array<double, kNumAminoAcids>, kNumAminoAcids>& V,
+    double t, double tolerance) {
     const auto& pi = V[0];
-
-    REQUIRE(lam[0] == 0.0);
-    double total = 0.0;
-    for (std::size_t k = 1; k < kNumAminoAcids; ++k) REQUIRE(lam[k] < 0.0);
-    for (double p : pi) {
-        REQUIRE(p > 0.0);
-        total += p;
-    }
-    REQUIRE(std::abs(total - 1.0) < 1e-12);
-    // Dayhoff frequencies: Ala 0.087127, Trp 0.010494
-    REQUIRE(std::abs(pi[0] - 0.087127) < 1e-6);
-    REQUIRE(std::abs(pi[17] - 0.010494) < 1e-6);
-
-    for (double t : {1.0, 10.0, 100.0, 1000.0}) {
-        double expected_change = 0.0;
-        for (std::size_t i = 0; i < kNumAminoAcids; ++i) {
-            double row = 0.0;
-            for (std::size_t j = 0; j < kNumAminoAcids; ++j) {
-                double p = 0.0;
-                for (std::size_t k = 0; k < kNumAminoAcids; ++k) {
-                    p += V[k][i] * V[k][j] * std::exp(lam[k] * t);
-                }
-                p /= pi[i];
-                REQUIRE(p >= 0.0);
-                row += p;
-                if (i == j) expected_change += pi[i] * (1.0 - p);
+    double expected_change = 0.0;
+    for (std::size_t i = 0; i < kNumAminoAcids; ++i) {
+        double row = 0.0;
+        for (std::size_t j = 0; j < kNumAminoAcids; ++j) {
+            double p = 0.0;
+            for (std::size_t k = 0; k < kNumAminoAcids; ++k) {
+                p += V[k][i] * V[k][j] * std::exp(lam[k] * t);
             }
-            REQUIRE(std::abs(row - 1.0) < 1e-12);
+            p /= pi[i];
+            REQUIRE(p >= -tolerance);
+            row += p;
+            if (i == j) expected_change += pi[i] * (1.0 - p);
         }
-        // One PAM per unit of t: 1% change at t = 1
-        if (t == 1.0) REQUIRE(std::abs(expected_change - 0.01) < 1e-4);
+        REQUIRE(std::abs(row - 1.0) < tolerance);
+    }
+    return expected_change;
+}
+
+}  // namespace
+
+TEST_CASE("PAM and JTT eigen data are valid reversible models", "[substitution_matrix]") {
+    // Rebuilt from Dayhoff et al. (1978) and Jones et al. (1992) by
+    // tools/make_eigen.py, at one PAM (1% change) per unit of t
+    struct Model {
+        const std::array<double, kNumAminoAcids>& lam;
+        const std::array<std::array<double, kNumAminoAcids>, kNumAminoAcids>& V;
+        double pi_ala, pi_trp;
+    };
+    for (const Model& m : {Model{matrix_data::pam_eigenvalues, matrix_data::pam_eigenvectors, 0.087127, 0.010494},
+                           Model{matrix_data::jtt_eigenvalues, matrix_data::jtt_eigenvectors, 0.076748, 0.014261}}) {
+        REQUIRE(m.lam[0] == 0.0);
+        for (std::size_t k = 1; k < kNumAminoAcids; ++k) REQUIRE(m.lam[k] < 0.0);
+        double total = 0.0;
+        for (double p : m.V[0]) {
+            REQUIRE(p > 0.0);
+            total += p;
+        }
+        REQUIRE(std::abs(total - 1.0) < 1e-12);
+        REQUIRE(std::abs(m.V[0][0] - m.pi_ala) < 1e-6);
+        REQUIRE(std::abs(m.V[0][17] - m.pi_trp) < 1e-6);
+
+        REQUIRE(std::abs(check_transition_matrix(m.lam, m.V, 1.0, 1e-12) - 0.01) < 1e-4);
+        for (double t : {10.0, 100.0, 1000.0}) {
+            (void)check_transition_matrix(m.lam, m.V, t, 1e-12);
+        }
+    }
+}
+
+TEST_CASE("PMB eigen data is a valid model at its stored precision", "[substitution_matrix]") {
+    // PMB is applied with t = distance * rate, about 1 substitution per unit t
+    const double change = check_transition_matrix(
+        matrix_data::pmb_eigenvalues, matrix_data::pmb_eigenvectors, 0.01, 1e-5);
+    REQUIRE(change > 0.009);
+    REQUIRE(change < 0.011);
+    for (double t : {0.1, 1.0, 10.0}) {
+        (void)check_transition_matrix(matrix_data::pmb_eigenvalues, matrix_data::pmb_eigenvectors, t, 1e-5);
+    }
+}
+
+TEST_CASE("Substitution probabilities from one residue sum to 1", "[substitution_matrix]") {
+    // Divides by the source frequency (SIMPROT 1.04 used the target's)
+    for (auto model : {SubstitutionModel::PAM, SubstitutionModel::JTT, SubstitutionModel::PMB}) {
+        auto matrix = create_substitution_matrix(model);
+        for (AminoAcidIndex from = 0; from < kNumAminoAcids; ++from) {
+            double row = 0.0;
+            for (AminoAcidIndex to = 0; to < kNumAminoAcids; ++to) {
+                row += matrix->substitution_probability(from, to, 5.0);
+            }
+            REQUIRE(std::abs(row - 1.0) < 1e-5);
+        }
     }
 }
 

@@ -36,7 +36,11 @@ double SubstitutionMatrix::substitution_probability(
         prob += eigvecs[k][to] * eigvecs[k][from] * std::exp(eigvals[k] * time);
     }
 
-    return prob / freq[to];
+    // With eigenvectors[k][i] = U[i][k] * sqrt(pi_i) the transition
+    // probability divides by the frequency of the residue it starts from.
+    // SIMPROT 1.04 divided by freq[to], which gives P(to -> from) and rows
+    // that do not sum to 1.
+    return prob / freq[from];
 }
 
 AminoAcidIndex SubstitutionMatrix::sample_substitution(
@@ -63,7 +67,7 @@ AminoAcidIndex SubstitutionMatrix::sample_substitution(
         for (std::size_t k = 0; k < kNumAminoAcids; ++k) {
             prob += eigvecs[k][j] * eigvecs[k][from] * exp_eigmat[k];
         }
-        sum += prob / freq[j];
+        sum += prob / freq[from];  // P(from -> j); see substitution_probability
 
         if (sum >= x) {
             return j;
