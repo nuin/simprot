@@ -142,6 +142,21 @@ public:
      */
     bool extinct = false;
 
+    /**
+     * @brief Left child of an extinct node (FlagTree in SIMPROT 1.04).
+     *
+     * The original appends "Neg" to the left child of every extinct node,
+     * one level only, and leaves such nodes out of every output.
+     */
+    bool flagged_extinct = false;
+
+    /**
+     * @brief Whether this node is left out of the output files.
+     */
+    [[nodiscard]] bool omitted_from_output() const noexcept {
+        return extinct || flagged_extinct;
+    }
+
     //==========================================================================
     // Query methods
     //==========================================================================

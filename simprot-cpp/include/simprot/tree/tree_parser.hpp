@@ -135,6 +135,15 @@ private:
     double process_branch_length(double base_length, TreeNode& node);
 
     /**
+
+     * @brief Flag the left child of every extinct node (FlagTree).
+
+     */
+
+    void flag_extinct_left_children(TreeNode& node);
+
+
+    /**
      * @brief Generate a unique name for an internal node.
      */
     std::string generate_internal_name();

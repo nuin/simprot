@@ -5,12 +5,15 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cfloat>
+#include <utility>
+#include <limits>
 
 namespace simprot {
 
 namespace {
     constexpr int kMaxIndelLength = 2048;
     constexpr double kMaxIndelFraction = 0.05;  // 5% of sequence length
+    constexpr int kLegacyCustomLength = 200;    // IndelDistLength in SIMPROT 1.04
 }
 
 //==============================================================================
@@ -22,22 +25,49 @@ int IndelModel::max_indel_length(int sequence_length) {
     return std::min(max_len, kMaxIndelLength);
 }
 
-int IndelModel::binary_search_cdf(const std::vector<double>& cdf, double x) {
-    if (cdf.empty()) return 1;
+int IndelModel::build_legacy_cdf(
+    int limit, bool stop_at_epsilon,
+    const std::function<double(int)>& density,
+    std::vector<double>& cdf) {
 
+    cdf.assign(static_cast<std::size_t>(std::max(limit, 1)) + 1, 0.0);
+
+    // cdf[0] starts at 1.0 so the epsilon test passes for i = 1
+    cdf[0] = 1.0;
+    double sum = 0.0;
+    int i = 1;
+    for (; i < limit && (!stop_at_epsilon || cdf[i - 1] > DBL_EPSILON); ++i) {
+        cdf[i] = density(i);
+        sum += cdf[i];
+    }
+    cdf[0] = 0.0;
+
+    // A zero total gives 0/0 = NaN in the original, which makes every
+    // comparison false so the search returns length 1; keep that outcome
+    // without dividing by zero.
+    const int n = i;
+    for (i = 1; i < n; ++i) {
+        cdf[i] = (sum > 0.0) ? cdf[i] / sum : std::numeric_limits<double>::quiet_NaN();
+    }
+    for (i = 1; i < n && cdf[i - 1] < 1.0 - DBL_EPSILON; ++i) {
+        cdf[i] += cdf[i - 1];
+    }
+    return i;
+}
+
+int IndelModel::legacy_indel_length(
+    const std::vector<double>& cdf, int size, double x) {
+
+    // GetIndelLength(size - 1): high = (size - 1) + 1. When the search reaches
+    // cdf[size] the original reads past the filled entries (uninitialised
+    // memory); cdf is sized so that entry exists and is zero.
     int low = 0;
-    int high = static_cast<int>(cdf.size());
-
+    int high = size;
     while (true) {
         int mid = (low + high) / 2;
-        if (mid == 0) return 1;
-        if (mid == static_cast<int>(cdf.size())) return static_cast<int>(cdf.size());
         if (mid == low) return mid + 1;
-
-        if (cdf[mid] <= x) {
-            if (mid + 1 < static_cast<int>(cdf.size()) && cdf[mid + 1] > x) {
-                return mid + 1;
-            }
+        if (cdf[static_cast<std::size_t>(mid)] <= x) {
+            if (cdf[static_cast<std::size_t>(mid) + 1] > x) return mid + 1;
             low = mid;
         } else {
             high = mid;
@@ -58,45 +88,20 @@ int QianGoldsteinModel::sample_length(
     double site_rate,
     WichmannHillRNG& rng) const {
 
-    // Compute normalized distance
-    double normalized_dist = site_rate * branch_distance / evol_scale_;
-    if (normalized_dist <= 0.0) {
-        normalized_dist = 0.001;  // Avoid division by zero
-    }
+    // InitCumulativeIndelLength: lengths 1 .. max-1, 4-term exponential
+    const double normalized_dist = site_rate * branch_distance / evol_scale_;
+    auto density = [normalized_dist](int i) {
+        // i / -(k * 0) is -inf in the original, so every term is exp(-inf) = 0
+        if (normalized_dist <= 0.0) return 0.0;
+        return 1.027e-2 * std::exp(i / (-0.96 * normalized_dist))
+             + 3.031e-3 * std::exp(i / (-3.13 * normalized_dist))
+             + 6.141e-4 * std::exp(i / (-14.3 * normalized_dist))
+             + 2.090e-5 * std::exp(i / (-81.7 * normalized_dist));
+    };
 
-    int max_len = max_indel_length(sequence_length);
-
-    // Build cumulative distribution using 4-term exponential formula
-    std::vector<double> cdf(max_len + 1, 0.0);
-    double sum = 0.0;
-
-    for (int i = 1; i <= max_len; ++i) {
-        double term1 = 1.027e-2 * std::exp(-i / (0.96 * normalized_dist));
-        double term2 = 3.031e-3 * std::exp(-i / (3.13 * normalized_dist));
-        double term3 = 6.141e-4 * std::exp(-i / (14.3 * normalized_dist));
-        double term4 = 2.090e-5 * std::exp(-i / (81.7 * normalized_dist));
-
-        double prob = term1 + term2 + term3 + term4;
-        if (prob < DBL_EPSILON) break;
-
-        cdf[i] = prob;
-        sum += prob;
-    }
-
-    // Normalize and make cumulative
-    if (sum > 0.0) {
-        for (int i = 1; i <= max_len; ++i) {
-            cdf[i] /= sum;
-        }
-        for (int i = 2; i <= max_len; ++i) {
-            cdf[i] += cdf[i - 1];
-            if (cdf[i - 1] >= 1.0 - DBL_EPSILON) break;
-        }
-    }
-
-    // Sample from distribution
-    double x = rng.uniform();
-    return binary_search_cdf(cdf, x);
+    std::vector<double> cdf;
+    int size = build_legacy_cdf(max_indel_length(sequence_length), true, density, cdf);
+    return legacy_indel_length(cdf, size, rng.uniform());
 }
 
 //==============================================================================
@@ -114,34 +119,13 @@ int BennerModel::sample_length(
     (void)branch_distance;  // Not used in Benner model
     (void)site_rate;
 
-    int max_len = max_indel_length(sequence_length);
+    // InitCumulativeIndelLengthBenner: lengths 1 .. max-1, P(i) = i^k
+    const double k = static_cast<double>(k_);
+    auto density = [k](int i) { return std::pow(static_cast<double>(i), k); };
 
-    // Build cumulative distribution using power-law: P(i) = i^k
-    std::vector<double> cdf(max_len + 1, 0.0);
-    double sum = 0.0;
-
-    for (int i = 1; i <= max_len; ++i) {
-        double prob = std::pow(static_cast<double>(i), static_cast<double>(k_));
-        if (prob < DBL_EPSILON) break;
-
-        cdf[i] = prob;
-        sum += prob;
-    }
-
-    // Normalize and make cumulative
-    if (sum > 0.0) {
-        for (int i = 1; i <= max_len; ++i) {
-            cdf[i] /= sum;
-        }
-        for (int i = 2; i <= max_len; ++i) {
-            cdf[i] += cdf[i - 1];
-            if (cdf[i - 1] >= 1.0 - DBL_EPSILON) break;
-        }
-    }
-
-    // Sample from distribution
-    double x = rng.uniform();
-    return binary_search_cdf(cdf, x);
+    std::vector<double> cdf;
+    int size = build_legacy_cdf(max_indel_length(sequence_length), true, density, cdf);
+    return legacy_indel_length(cdf, size, rng.uniform());
 }
 
 //==============================================================================
@@ -154,51 +138,20 @@ CustomIndelModel::CustomIndelModel(const std::string& filename) {
         throw std::runtime_error("Cannot open indel distribution file: " + filename);
     }
 
-    std::vector<double> frequencies;
     double freq;
     while (file >> freq) {
-        frequencies.push_back(freq);
+        frequencies_.push_back(freq);
     }
 
-    if (frequencies.empty()) {
+    if (frequencies_.empty()) {
         throw std::runtime_error("Empty indel distribution file: " + filename);
-    }
-
-    // Build CDF
-    double sum = 0.0;
-    for (double f : frequencies) {
-        sum += f;
-    }
-
-    cdf_.resize(frequencies.size() + 1, 0.0);
-    if (sum > 0.0) {
-        for (std::size_t i = 0; i < frequencies.size(); ++i) {
-            cdf_[i + 1] = frequencies[i] / sum;
-        }
-        for (std::size_t i = 2; i < cdf_.size(); ++i) {
-            cdf_[i] += cdf_[i - 1];
-        }
     }
 }
 
-CustomIndelModel::CustomIndelModel(std::vector<double> frequencies) {
-    if (frequencies.empty()) {
+CustomIndelModel::CustomIndelModel(std::vector<double> frequencies)
+    : frequencies_(std::move(frequencies)) {
+    if (frequencies_.empty()) {
         throw std::runtime_error("Empty frequency vector for custom indel model");
-    }
-
-    double sum = 0.0;
-    for (double f : frequencies) {
-        sum += f;
-    }
-
-    cdf_.resize(frequencies.size() + 1, 0.0);
-    if (sum > 0.0) {
-        for (std::size_t i = 0; i < frequencies.size(); ++i) {
-            cdf_[i + 1] = frequencies[i] / sum;
-        }
-        for (std::size_t i = 2; i < cdf_.size(); ++i) {
-            cdf_[i] += cdf_[i - 1];
-        }
     }
 }
 
@@ -212,8 +165,18 @@ int CustomIndelModel::sample_length(
     (void)branch_distance;
     (void)site_rate;
 
-    double x = rng.uniform();
-    return binary_search_cdf(cdf_, x);
+    // InitCumulativeIndelLengthOther: a fixed IndelDistLength of 200, so
+    // lengths 1 .. 199 from the file (ReadGapDist keeps at most
+    // kMaxIndelLength values; missing ones are 0), with no epsilon stop.
+    auto density = [this](int i) {
+        auto idx = static_cast<std::size_t>(i - 1);
+        return (idx < frequencies_.size() && idx < static_cast<std::size_t>(kMaxIndelLength))
+            ? frequencies_[idx] : 0.0;
+    };
+
+    std::vector<double> cdf;
+    int size = build_legacy_cdf(kLegacyCustomLength, false, density, cdf);
+    return legacy_indel_length(cdf, size, rng.uniform());
 }
 
 //==============================================================================
@@ -251,7 +214,9 @@ int compute_num_indels(
     bool use_benner_scale,
     WichmannHillRNG& rng) {
 
-    if (indel_freq <= 0.0 || indel_freq >= 1.0) {
+    // The original draws one uniform per site even when indel_freq is 0
+    // (f is then 0), so only out-of-range frequencies skip the loop.
+    if (indel_freq < 0.0 || indel_freq >= 1.0) {
         return 0;
     }
 
@@ -415,7 +380,12 @@ void mark_indel_positions(
             }
         }
     } else {
-        // Deletion: mark all positions to be deleted
+        // Deletion: mark all positions to be deleted. MarkPositions in
+        // SIMPROT 1.04 moves a deletion that would run past the end back so
+        // that it ends on the last residue and removes the full length.
+        if (position + length > seq_len) {
+            position = std::max(0, seq_len - length);
+        }
         for (int i = 0; i < length && (position + i) < seq_len; ++i) {
             SequenceNode* node = seq.node_at(static_cast<std::size_t>(position + i));
             if (node) {

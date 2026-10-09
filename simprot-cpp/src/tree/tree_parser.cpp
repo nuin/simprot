@@ -24,6 +24,8 @@ std::unique_ptr<TreeNode> NewickParser::parse(std::string_view newick) {
     // Set root name
     root->name = "InternalRoot";
 
+    flag_extinct_left_children(*root);
+
     return root;
 }
 
@@ -146,6 +148,15 @@ double NewickParser::process_branch_length(double base_length, TreeNode& node) {
     // regardless of whether BranchExtinction is 0. This maintains RNG state sync.
     double extinction_roll = rng_ ? rng_->uniform() : 1.0;
 
+    // With a variable branch multiplier the original draws the gamma factor
+    // before testing for extinction, so it is consumed even for an extinct
+    // branch.
+    double gamma_factor = 1.0;
+    const bool variable = rng_ && variable_branch_gamma_ > 0.0;
+    if (variable) {
+        gamma_factor = rng_->gamma(variable_branch_gamma_);
+    }
+
     // Check for extinction
     if (extinction_prob_ > 0.0 && extinction_roll <= extinction_prob_) {
         node.extinct = true;
@@ -153,16 +164,23 @@ double NewickParser::process_branch_length(double base_length, TreeNode& node) {
         return 0.0;
     }
 
-    // Apply branch scaling
+    // distance * TreeBranchScale [* randomGamma], in the original's order
     double length = base_length * branch_scale_;
-
-    // Apply variable branch gamma if enabled
-    if (rng_ && variable_branch_gamma_ > 0.0) {
-        double gamma_factor = rng_->gamma(variable_branch_gamma_);
+    if (variable) {
         length *= gamma_factor;
     }
 
     return length;
+}
+
+void NewickParser::flag_extinct_left_children(TreeNode& node) {
+    // FlagTree in SIMPROT 1.04: post-order, and only the left child of a node
+    // that is itself extinct, so the flag never travels more than one level.
+    if (node.left) flag_extinct_left_children(*node.left);
+    if (node.right) flag_extinct_left_children(*node.right);
+    if (node.left && node.extinct) {
+        node.left->flagged_extinct = true;
+    }
 }
 
 std::string NewickParser::generate_internal_name() {

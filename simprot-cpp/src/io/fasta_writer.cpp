@@ -45,7 +45,7 @@ void write_fasta_leaf_sequences(std::ostream& os,
     // Recursive function to collect and write leaf sequences
     std::function<void(const TreeNode&)> write_leaves = [&](const TreeNode& node) {
         if (node.is_leaf()) {
-            if (!node.sequence.empty()) {
+            if (!node.sequence.empty() && !node.omitted_from_output()) {
                 write_fasta_sequence(os, node.name, node.sequence, line_width);
             }
         } else {

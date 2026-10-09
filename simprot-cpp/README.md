@@ -7,7 +7,7 @@ A modern, clean reimplementation of SIMPROT using C++20 features.
 - **Modular architecture** with clear separation of concerns
 - **No external dependencies** (standard library only)
 - **Full test coverage** with Catch2
-- **Exact reproducibility** with legacy version (same seed = identical output)
+- **Exact reproducibility** of the legacy version's code paths (same seed = identical output), with corrected PAM and JTT data and substitution probabilities
 - **Type-safe interfaces** with strong typing and `std::optional`
 
 ## Building
@@ -189,12 +189,38 @@ int main() {
 
 ## Compatibility Notes
 
-The C++20 implementation produces **identical output** to the legacy version when given the same seed. This required careful matching of:
+The C++20 implementation follows the legacy version's code paths exactly: given the same seed and the same model data, it produces **identical output**. It deliberately differs from 1.04 in three model corrections, listed after the matching rules, and `tests/legacy_parity/run.sh` applies those same corrections to its scratch legacy build. The harness checks this. It runs both programs over 21 combinations of trees and options (all three matrices, the three indel length models, gamma and equal rates, no indels, branch scaling, variable branches and extinction) and compares the outputs. This required careful matching of:
 
-1. **RNG consumption order** - Same sequence of random number calls
+1. **RNG consumption order** - Same sequence of random number calls, including one draw per site when the indel frequency is 0, and the dummy "correlated mutation" draw for every profile column after the first (deleted columns count)
 2. **Insertion generation** - Two-phase (all residues, then all rates)
 3. **Indel position CDF** - Special handling for insertion vs deletion
 4. **Zero-distance branches** - Rates not inherited, regenerated fresh
+5. **Indel length CDF** - Lengths 1 .. max-1 (max = 5% of the sequence), the density cut at `DBL_EPSILON`, and the original binary search; a custom distribution always spans 200 entries and uses the unscaled branch length
+6. **Insertion and deletion placement** - An insertion at position 0 is a prefix; a deletion that would run past the end is moved back to end on the last residue
+7. **Amino acid frequencies** - Taken from the eigenvector row with the largest eigenvalue (row 10 for PAM, row 0 for JTT and PMB), with the cumulative table ending in 1.0
+8. **Floating-point order** - `100 * distance * rate` and rate normalisation (divide by the sum, then multiply by the length) are evaluated as in the original, because PAM amplifies last-bit differences
+9. **Branch extinction** - Extinct leaves and the left child of each extinct node (`FlagTree`) are left out of the output; with variable branch lengths the gamma multiplier is drawn before the extinction test
+
+Two legacy behaviours are deliberately **not** reproduced:
+
+- **Truncated alignments.** Legacy sometimes writes a true alignment that does not match its own sequences: after some indels at the end of a sequence it drops residues. AddressSanitizer reports a heap-buffer-overflow in `FindGapColumn`. The C++ alignment always matches the sequences, and `compare_legacy.py` reports such cases as a legacy defect.
+- **Crashes.** Legacy occasionally dies before writing its output (`Killed: 9`). `run.sh` lists those seeds separately.
+
+**Model corrections relative to 1.04.** These change results compared with SIMPROT 1.04 and the 2006 study:
+
+1. **PAM rebuilt.** The 1.04 PAM eigendecomposition was invalid: it had two positive eigenvalues, frequencies summing to 0.62, rows of P(t) that did not sum to 1, and negative probabilities. Runs were about 56% A and 26% N. It is rebuilt from Dayhoff et al. (1978).
+2. **JTT rebuilt.** The 1.04 JTT data was valid, but scaled to one substitution per unit of t, while the code uses t = 100 · distance · rate. JTT therefore ran about 100× too fast: two sequences at distance 0.01 were only 42.5% identical. It is rebuilt from Jones et al. (1992) at one PAM per unit of t.
+3. **Substitution probabilities.** With eigenvectors stored as `U[i][k]·√π_i`, P_ij(t) divides by π_i, the source residue. 1.04's `GetSubstitution` divided by π_j, which samples from P_ji, whose rows do not sum to 1. This affected all three models.
+
+`tools/make_eigen.py` builds the PAM and JTT data from the exchangeabilities and frequencies in PAML's `dayhoff.dat` and `jones.dat`, in the layout the PMB data uses (zero eigenvalue first), at one PAM (0.01 substitutions per site) per unit of t. Its `--check` mode verifies orthonormality, Q reconstruction, row sums, positivity, detailed balance and the limit to π. A branch length now means expected substitutions per site for every model. Simulated identity matches the model's prediction for pairs at distance 0.01, 0.1 and 0.5:
+
+| Model | 0.01 | 0.1 | 0.5 |
+|---|---|---|---|
+| PAM | 98.9% (99.0) | 90.5% (90.6) | 63.8% (63.3) |
+| JTT | 99.0% (99.0) | 90.5% (90.6) | 63.6% (62.8) |
+| PMB | 98.8% (99.0) | 90.5% (90.3) | 61.6% (61.2) |
+
+Composition stays within sampling error of the model frequencies. `legacy/` is kept unchanged as the historical 1.04 reference.
 
 See `legacy/README.md` for details on the original algorithm's quirks.
 
@@ -206,9 +232,13 @@ Tests use Catch2 and cover:
 - Substitution matrix probability calculations
 - Indel model distributions
 - Tree parsing correctness
-- Full integration tests comparing to legacy output
+- Legacy parity rules and model validity (`tests/test_legacy_parity.cpp`)
+- Eigen data checks: `python3 tools/make_eigen.py pam --check` and `jtt --check` (needs numpy)
 
 Run with:
 ```bash
 ./build/simprot_tests
+tests/legacy_parity/run.sh build/simprot 20   # whole runs against legacy/, 20 seeds per config
 ```
+
+With recent clang, Catch2 v3.4.0 trips `-Wdeprecated-literal-operator` under `-Werror`. Configure with `-DCMAKE_CXX_FLAGS=-Wno-deprecated-literal-operator` to build the tests.

@@ -76,6 +76,7 @@ if(BUILD_TESTS)
         tests/test_substitution_matrix.cpp
         tests/test_indel_model.cpp
         tests/test_mutable_sequence.cpp
+        tests/test_legacy_parity.cpp
     )
     target_link_libraries(simprot_tests PRIVATE simprot_lib Catch2::Catch2WithMain)
 

@@ -104,11 +104,13 @@ void MutableSequence::normalize_rates() {
 
     if (sum <= 0.0) return;
 
-    // Normalize: rate_i = rate_i / sum * size
-    // This makes the average rate = 1.0
-    double factor = static_cast<double>(size_) / sum;
+    // Normalize: rate_i = rate_i / sum * size, so the average rate is 1.0.
+    // Divide then multiply per site, as Mutate() in SIMPROT 1.04 does;
+    // folding size / sum into one factor rounds differently.
+    const auto size = static_cast<double>(size_);
     for (SequenceNode* node = head_; node; node = node->next) {
-        node->rate *= factor;
+        node->rate /= sum;
+        node->rate *= size;
     }
 }
 
