@@ -5,7 +5,9 @@
 #   tests/legacy_parity/run.sh path/to/simprot [seeds-per-config]   (default 20)
 #
 # Legacy has no seed option and seeds from getpid(), so a scratch copy of
-# legacy/simprot.cpp is built with SetSeed() reading $SIMPROT_SEED. Needs a
+# legacy/simprot.cpp is built with SetSeed() reading $SIMPROT_SEED, and with
+# the port's model fixes (rebuilt PAM and JTT, source-frequency divisor; see
+# below). Needs a
 # C++ compiler, popt (brew install popt / apt install libpopt-dev) and python3.
 # Flags differ between the versions, so each config lists both spellings.
 set -euo pipefail
@@ -28,6 +30,33 @@ s = open(path, errors='surrogateescape').read()
 s = s.replace(needle, 'SetSeed(getenv("SIMPROT_SEED") ? atoi(getenv("SIMPROT_SEED")) : getpid());')
 open(path, 'w', errors='surrogateescape').write(s)
 EOF
+# The C++ port ships rebuilt PAM and JTT data (tools/make_eigen.py) and divides
+# substitution probabilities by the source residue's frequency; legacy/ keeps
+# the 1.04 data and divisor. Give the scratch legacy copy the same model data
+# and divisor so every run still compares the two code paths.
+python3 - "$tmp/eigen.h" "$repo/simprot-cpp/include/simprot/evolution/matrix_data.hpp" <<'EOF'
+import re, sys
+eigen_h, data_hpp = sys.argv[1], sys.argv[2]
+d = open(data_hpp).read()
+def numbers(name):
+    i = d.index(name + ' =')
+    body = d[d.index('{', i):d.index(';', i)]
+    return re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', body)
+s = open(eigen_h, errors='surrogateescape').read()
+def replace(s, name, body):
+    i = s.index(name)
+    return s[:s.index('{', i)] + body + s[s.index(';', i):]
+for model in ('pam', 'jtt'):
+    lam = numbers(model + '_eigenvalues')
+    vec = numbers(model + '_eigenvectors')
+    assert len(lam) == 20 and len(vec) == 400, (model, len(lam), len(vec))
+    s = replace(s, model + 'eigmat[20]', '{' + ', '.join(lam) + '}')
+    s = replace(s, model + 'probmat[20][20]',
+                '{\n' + ',\n'.join('{' + ', '.join(vec[k*20:(k+1)*20]) + '}' for k in range(20)) + '\n}')
+open(eigen_h, 'w', errors='surrogateescape').write(s)
+EOF
+grep -q 'sum += p/freqaa\[j\];' "$tmp/simprot.cpp" || { echo "expected 'sum += p/freqaa[j];' in legacy" >&2; exit 1; }
+sed -i.bak 's#sum += p/freqaa\[j\];#sum += p/freqaa[i];#' "$tmp/simprot.cpp"
 popt="$(brew --prefix popt 2>/dev/null || echo /usr)"
 c++ -O2 -w -o "$tmp/legacy" "$tmp/simprot.cpp" "$tmp/random.c" -I"$popt/include" -L"$popt/lib" -lpopt -lm
 
@@ -70,8 +99,12 @@ for spec in "${configs[@]}"; do
   for s in $(seq 1 "$seeds"); do
     rm -rf "$tmp/L" "$tmp/C"; mkdir "$tmp/L" "$tmp/C"
     # shellcheck disable=SC2086
-    (cd "$tmp/L" && SIMPROT_SEED=$s "$tmp/legacy" -f "$tmp/$tree" -a aln.fa -s seq.fa -o indel.log $la >/dev/null 2>&1) || true
-    if [ ! -s "$tmp/L/seq.fa" ]; then crash="$crash $s"; continue; fi
+    # A legacy run that dies (it occasionally gets "Killed: 9") can leave a
+    # partial seq.fa, so judge it by its exit status
+    if ! (cd "$tmp/L" && SIMPROT_SEED=$s "$tmp/legacy" -f "$tmp/$tree" -a aln.fa -s seq.fa -o indel.log $la >/dev/null 2>&1) 2>/dev/null \
+        || [ ! -s "$tmp/L/seq.fa" ]; then
+      crash="$crash $s"; continue
+    fi
     # shellcheck disable=SC2086
     (cd "$tmp/C" && "$cpp" -f "$tmp/$tree" -a aln.fa -s seq.fa -o indel.log -S "$s" $ca >/dev/null 2>&1)
     if python3 -I "$here/compare_legacy.py" "$tmp/L" "$tmp/C" >/dev/null; then

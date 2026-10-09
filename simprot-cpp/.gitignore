@@ -17,3 +17,4 @@ cmake-build-*/
 # Executables (in build directory or root)
 /simprot
 /simprot_tests
+__pycache__/
